@@ -1,8 +1,12 @@
 {
-  "name": "mcp-framework",
+  "name": "@mzyil/framework",
   "version": "0.2.15-alpha.0",
   "description": "Framework for building Model Context Protocol (MCP) servers in Typescript",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzyil/mcp-framework.git"
+  },
   "authors": [
     "Alex Andru <alex@andru.codes>",
     "mzyil <mzyil12@gmail.com>"

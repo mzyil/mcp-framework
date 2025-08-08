@@ -31,6 +31,7 @@ jobs:
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com/
+          scope: '@mzyil'
       - run: npm ci
       - run: npm config set registry https://npm.pkg.github.com/
       - run: npm ping
