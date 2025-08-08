@@ -1,5 +1,5 @@
 {
-  "name": "@mzyil/framework",
+  "name": "@mzyil/mcp-framework",
   "version": "0.2.15-alpha.0",
   "description": "Framework for building Model Context Protocol (MCP) servers in Typescript",
   "type": "module",
