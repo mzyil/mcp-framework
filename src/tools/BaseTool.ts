@@ -10,9 +10,6 @@ type AllFieldsHaveDescriptions<T extends z.ZodRawShape> = {
   [K in keyof T]: HasDescription<T[K]>;
 };
 
-// Strict Zod object type that requires all fields to have descriptions
-type StrictZodObject<T extends z.ZodRawShape> = z.ZodObject<AllFieldsHaveDescriptions<T>>;
-
 export type ToolInputSchema<T> = {
   [K in keyof T]: {
     type: z.ZodType<T[K]>;
@@ -26,16 +23,10 @@ export type ToolInput<T extends ToolInputSchema<any>> = {
 
 // Type helper to infer input type from schema
 export type InferSchemaType<TSchema> =
-  TSchema extends z.ZodObject<any>
-    ? z.infer<TSchema>
-    : TSchema extends ToolInputSchema<infer T>
-      ? T
-      : never;
+  TSchema extends z.ZodObject<any> ? z.infer<TSchema> : TSchema extends ToolInputSchema<infer T> ? T : never;
 
 // Magic type that infers from the schema property of the current class
-export type MCPInput<T extends MCPTool<any, any> = MCPTool<any, any>> = InferSchemaType<
-  T['schema']
->;
+export type MCPInput<T extends MCPTool<any, any> = MCPTool<any, any>> = InferSchemaType<T['schema']>;
 
 export type TextContent = {
   type: 'text';
@@ -65,9 +56,7 @@ export interface ToolProtocol extends SDKTool {
       required?: string[];
     };
   };
-  toolCall(request: {
-    params: { name: string; arguments?: Record<string, unknown> };
-  }): Promise<ToolResponse>;
+  toolCall(request: { params: { name: string; arguments?: Record<string, unknown> } }): Promise<ToolResponse>;
 }
 
 /**
@@ -91,9 +80,7 @@ export interface ToolProtocol extends SDKTool {
  * }
  * ```
  */
-export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema = any>
-  implements ToolProtocol
-{
+export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema = any> implements ToolProtocol {
   abstract name: string;
   abstract description: string;
   protected abstract schema: TSchema extends z.ZodObject<any>
@@ -111,7 +98,6 @@ export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema 
   public validate(): void {
     if (this.isZodObjectSchema(this.schema)) {
       // Access inputSchema to trigger validation
-      const _ = this.inputSchema;
     }
   }
 
@@ -120,11 +106,10 @@ export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema 
   }
 
   get inputSchema(): { type: 'object'; properties?: Record<string, unknown>; required?: string[] } {
-    if (this.isZodObjectSchema(this.schema)) {
-      return this.generateSchemaFromZodObject(this.schema);
-    } else {
-      return this.generateSchemaFromLegacyFormat(this.schema as ToolInputSchema<TInput>);
+    if (!this.isZodObjectSchema(this.schema)) {
+      throw new Error(`Invalid schema type: ${typeof this.schema}`);
     }
+    return this.generateSchemaFromZodObject(this.schema);
   }
 
   private generateSchemaFromZodObject(zodSchema: z.ZodObject<any>): {
@@ -170,199 +155,7 @@ export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema 
     jsonSchema: any;
     isOptional: boolean;
   } {
-    let currentSchema = schema;
-    let isOptional = false;
-    let defaultValue: any;
-    let description: string | undefined;
-
-    // Extract description before unwrapping
-    const getDescription = (s: any) => s._def?.description;
-    description = getDescription(currentSchema);
-
-    // Unwrap modifiers to get to the base type
-    while (true) {
-      if (currentSchema instanceof z.ZodOptional) {
-        isOptional = true;
-        currentSchema = currentSchema.unwrap();
-        if (!description) description = getDescription(currentSchema);
-      } else if (currentSchema instanceof z.ZodDefault) {
-        defaultValue = currentSchema._def.defaultValue();
-        currentSchema = currentSchema._def.innerType;
-        if (!description) description = getDescription(currentSchema);
-      } else if (currentSchema instanceof z.ZodNullable) {
-        isOptional = true;
-        currentSchema = currentSchema.unwrap();
-        if (!description) description = getDescription(currentSchema);
-      } else {
-        break;
-      }
-    }
-
-    // Build JSON Schema
-    const jsonSchema: any = {
-      type: this.getJsonSchemaTypeFromZod(currentSchema),
-    };
-
-    if (description) {
-      jsonSchema.description = description;
-    }
-
-    if (defaultValue !== undefined) {
-      jsonSchema.default = defaultValue;
-    }
-
-    // Handle enums
-    if (currentSchema instanceof z.ZodEnum) {
-      jsonSchema.enum = currentSchema._def.values;
-    }
-
-    // Handle arrays
-    if (currentSchema instanceof z.ZodArray) {
-      const itemInfo = this.extractFieldInfo(currentSchema._def.type);
-      jsonSchema.items = itemInfo.jsonSchema;
-    }
-
-    // Handle nested objects
-    if (currentSchema instanceof z.ZodObject) {
-      const shape = currentSchema.shape;
-      const nestedProperties: Record<string, any> = {};
-      const nestedRequired: string[] = [];
-
-      Object.entries(shape).forEach(([key, fieldSchema]) => {
-        const nestedFieldInfo = this.extractFieldInfo(fieldSchema as z.ZodType);
-        nestedProperties[key] = nestedFieldInfo.jsonSchema;
-
-        if (!nestedFieldInfo.isOptional) {
-          nestedRequired.push(key);
-        }
-      });
-
-      jsonSchema.properties = nestedProperties;
-      if (nestedRequired.length > 0) {
-        jsonSchema.required = nestedRequired;
-      }
-    }
-
-    // Handle numeric constraints
-    if (currentSchema instanceof z.ZodNumber) {
-      const checks = (currentSchema as any)._def.checks || [];
-      checks.forEach((check: any) => {
-        switch (check.kind) {
-          case 'min':
-            jsonSchema.minimum = check.value;
-            if (check.inclusive === false) {
-              jsonSchema.exclusiveMinimum = true;
-            }
-            break;
-          case 'max':
-            jsonSchema.maximum = check.value;
-            if (check.inclusive === false) {
-              jsonSchema.exclusiveMaximum = true;
-            }
-            break;
-          case 'int':
-            jsonSchema.type = 'integer';
-            break;
-        }
-      });
-
-      // Handle positive() which adds a min check of 0 (exclusive)
-      const hasPositive = checks.some(
-        (check: any) => check.kind === 'min' && check.value === 0 && check.inclusive === false
-      );
-      if (hasPositive) {
-        jsonSchema.minimum = 1;
-      }
-    }
-
-    // Handle string constraints
-    if (currentSchema instanceof z.ZodString) {
-      const checks = (currentSchema as any)._def.checks || [];
-      checks.forEach((check: any) => {
-        switch (check.kind) {
-          case 'min':
-            jsonSchema.minLength = check.value;
-            break;
-          case 'max':
-            jsonSchema.maxLength = check.value;
-            break;
-          case 'regex':
-            jsonSchema.pattern = check.regex.source;
-            break;
-          case 'email':
-            jsonSchema.format = 'email';
-            break;
-          case 'url':
-            jsonSchema.format = 'uri';
-            break;
-          case 'uuid':
-            jsonSchema.format = 'uuid';
-            break;
-        }
-      });
-    }
-
-    return { jsonSchema, isOptional };
-  }
-
-  private getJsonSchemaTypeFromZod(zodType: z.ZodType<any>): string {
-    if (zodType instanceof z.ZodString) return 'string';
-    if (zodType instanceof z.ZodNumber) return 'number';
-    if (zodType instanceof z.ZodBoolean) return 'boolean';
-    if (zodType instanceof z.ZodArray) return 'array';
-    if (zodType instanceof z.ZodObject) return 'object';
-    if (zodType instanceof z.ZodEnum) return 'string';
-    if (zodType instanceof z.ZodNull) return 'null';
-    if (zodType instanceof z.ZodUndefined) return 'undefined';
-    if (zodType instanceof z.ZodLiteral) {
-      const value = zodType._def.value;
-      return typeof value === 'string'
-        ? 'string'
-        : typeof value === 'number'
-          ? 'number'
-          : typeof value === 'boolean'
-            ? 'boolean'
-            : 'string';
-    }
-    return 'string';
-  }
-
-  private generateSchemaFromLegacyFormat(schema: ToolInputSchema<TInput>): {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-  } {
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-
-    Object.entries(schema).forEach(([key, fieldSchema]) => {
-      // Determine the correct JSON schema type (unwrapping optional if necessary)
-      const jsonType = this.getJsonSchemaType(fieldSchema.type);
-      properties[key] = {
-        type: jsonType,
-        description: fieldSchema.description,
-      };
-
-      // If the field is not an optional, add it to the required array.
-      if (!(fieldSchema.type instanceof z.ZodOptional)) {
-        required.push(key);
-      }
-    });
-
-    const inputSchema: {
-      type: 'object';
-      properties: Record<string, unknown>;
-      required?: string[];
-    } = {
-      type: 'object',
-      properties,
-    };
-
-    if (required.length > 0) {
-      inputSchema.required = required;
-    }
-
-    return inputSchema;
+    return { jsonSchema: z.toJSONSchema(schema), isOptional: schema instanceof z.ZodOptional };
   }
 
   get toolDefinition() {
@@ -373,19 +166,13 @@ export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema 
     };
   }
 
-  protected abstract execute(
-    input: TSchema extends z.ZodObject<any> ? z.infer<TSchema> : TInput
-  ): Promise<unknown>;
+  protected abstract execute(input: TSchema extends z.ZodObject<any> ? z.infer<TSchema> : TInput): Promise<unknown>;
 
-  async toolCall(request: {
-    params: { name: string; arguments?: Record<string, unknown> };
-  }): Promise<ToolResponse> {
+  async toolCall(request: { params: { name: string; arguments?: Record<string, unknown> } }): Promise<ToolResponse> {
     try {
       const args = request.params.arguments || {};
       const validatedInput = await this.validateInput(args);
-      const result = await this.execute(
-        validatedInput as TSchema extends z.ZodObject<any> ? z.infer<TSchema> : TInput
-      );
+      const result = await this.execute(validatedInput as TSchema extends z.ZodObject<any> ? z.infer<TSchema> : TInput);
       return this.createSuccessResponse(result);
     } catch (error) {
       return this.createErrorResponse(error as Error);
@@ -398,29 +185,11 @@ export abstract class MCPTool<TInput extends Record<string, any> = any, TSchema 
     } else {
       const zodSchema = z.object(
         Object.fromEntries(
-          Object.entries(this.schema as ToolInputSchema<TInput>).map(([key, schema]) => [
-            key,
-            schema.type,
-          ])
+          Object.entries(this.schema as ToolInputSchema<TInput>).map(([key, schema]) => [key, schema.type])
         )
       );
       return zodSchema.parse(args) as TInput;
     }
-  }
-
-  private getJsonSchemaType(zodType: z.ZodType<any>): string {
-    // Unwrap optional types to correctly determine the JSON schema type.
-    let currentType = zodType;
-    if (currentType instanceof z.ZodOptional) {
-      currentType = currentType.unwrap();
-    }
-
-    if (currentType instanceof z.ZodString) return 'string';
-    if (currentType instanceof z.ZodNumber) return 'number';
-    if (currentType instanceof z.ZodBoolean) return 'boolean';
-    if (currentType instanceof z.ZodArray) return 'array';
-    if (currentType instanceof z.ZodObject) return 'object';
-    return 'string';
   }
 
   protected createSuccessResponse(data: unknown): ToolResponse {
@@ -522,16 +291,13 @@ export function defineSchema<T extends z.ZodRawShape>(shape: T): z.ZodObject<T> 
 
       // Check the schema and its wrapped versions for description
       while (schema && typeof schema === 'object') {
+        // @ts-expect-error -- bad types
         if ('_def' in schema && schema._def?.description) {
           hasDescription = true;
           break;
         }
         // Check wrapped types
-        if (
-          schema instanceof z.ZodOptional ||
-          schema instanceof z.ZodDefault ||
-          schema instanceof z.ZodNullable
-        ) {
+        if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault || schema instanceof z.ZodNullable) {
           schema = schema._def.innerType || (schema as any).unwrap();
         } else {
           break;
